@@ -12,8 +12,17 @@ jobs:
 
     steps:
 
+      # =====================================================
+      # CHECKOUT CODE
+      # =====================================================
+
       - name: Checkout Code
         uses: actions/checkout@v4
+
+
+      # =====================================================
+      # JAVA 17
+      # =====================================================
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -22,49 +31,172 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - name: Build WAR
-        run: mvn clean package
+
+      # =====================================================
+      # MAVEN BUILD
+      # =====================================================
+
+      - name: Build Java Application
+        run: |
+          mvn clean package
+
+
+      # =====================================================
+      # CHECK WAR
+      # =====================================================
+
+      - name: Check WAR File
+        run: |
+          echo "Checking generated WAR..."
+          ls -lh target/
+          test -f target/*.war
+          echo "WAR file found successfully."
+
+
+      # =====================================================
+      # CHECK PROD SECRETS
+      # =====================================================
+
+      - name: Check PROD Configuration
+        run: |
+          if [ -z "${{ secrets.PROD_HOST }}" ]; then
+            echo "ERROR: PROD_HOST is empty"
+            exit 1
+          fi
+
+          if [ -z "${{ secrets.PROD_SSH_KEY }}" ]; then
+            echo "ERROR: PROD_SSH_KEY is empty"
+            exit 1
+          fi
+
+          if [ -z "${{ secrets.PROD_USERNAME }}" ]; then
+            echo "ERROR: PROD_USERNAME is empty"
+            exit 1
+          fi
+
+          echo "PROD_HOST is configured"
+          echo "PROD_SSH_KEY is configured"
+          echo "PROD_USERNAME is configured"
+
+
+      # =====================================================
+      # CONFIGURE SSH
+      # =====================================================
 
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.PROD_SSH_KEY }}" > ~/.ssh/prod_key
+
+          printf '%s\n' "${{ secrets.PROD_SSH_KEY }}" > ~/.ssh/prod_key
+
           chmod 600 ~/.ssh/prod_key
-          ssh-keyscan -H ${{ secrets.PROD_HOST }} >> ~/.ssh/known_hosts
+
+          ssh-keyscan -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
+
+
+      # =====================================================
+      # TEST SSH CONNECTION
+      # =====================================================
+
+      - name: Test SSH Connection
+        run: |
+          ssh \
+            -i ~/.ssh/prod_key \
+            -o StrictHostKeyChecking=yes \
+            "${{ secrets.PROD_USERNAME }}@${{ secrets.PROD_HOST }}" \
+            "echo 'SSH connection to PROD successful'"
+
+
+      # =====================================================
+      # COPY WAR TO PROD EC2
+      # =====================================================
 
       - name: Copy WAR to PROD EC2
         run: |
-          scp -i ~/.ssh/prod_key \
+          scp \
+            -i ~/.ssh/prod_key \
+            -o StrictHostKeyChecking=yes \
             target/*.war \
-            ec2-user@${{ secrets.PROD_HOST }}:/tmp/neontask-prod.war
+            "${{ secrets.PROD_USERNAME }}@${{ secrets.PROD_HOST }}:/tmp/neontask-prod.war"
+
+
+      # =====================================================
+      # DEPLOY WAR TO TOMCAT
+      # =====================================================
 
       - name: Deploy to Tomcat
         run: |
-          ssh -i ~/.ssh/prod_key \
-            ec2-user@${{ secrets.PROD_HOST }} << 'EOF'
+          ssh \
+            -i ~/.ssh/prod_key \
+            -o StrictHostKeyChecking=yes \
+            "${{ secrets.PROD_USERNAME }}@${{ secrets.PROD_HOST }}" << 'EOF'
 
-            sudo systemctl stop tomcat
+            echo "=========================================="
+            echo "Starting PROD deployment"
+            echo "=========================================="
+
+
+            echo "Stopping Tomcat..."
+
+            sudo systemctl stop tomcat || true
+
+
+            echo "Removing old application..."
 
             sudo rm -rf /opt/tomcat/webapps/neontask-prod
+
             sudo rm -f /opt/tomcat/webapps/neontask-prod.war
 
-            sudo mv /tmp/neontask-prod.war \
+
+            echo "Copying new WAR..."
+
+            sudo mv \
+              /tmp/neontask-prod.war \
               /opt/tomcat/webapps/neontask-prod.war
 
-            sudo chown tomcat:tomcat \
+
+            echo "Setting permissions..."
+
+            sudo chown \
+              tomcat:tomcat \
               /opt/tomcat/webapps/neontask-prod.war
+
+
+            echo "Starting Tomcat..."
 
             sudo systemctl start tomcat
 
+
+            echo "Waiting for Tomcat..."
+
+            sleep 10
+
+
+            echo "Checking Tomcat status..."
+
             sudo systemctl status tomcat --no-pager
 
-            echo "PROD deployment completed!"
+
+            echo "=========================================="
+            echo "PROD deployment completed successfully"
+            echo "=========================================="
 
           EOF
 
+
+      # =====================================================
+      # SUCCESS
+      # =====================================================
+
       - name: PROD Deployment Successful
         run: |
-          echo "========================================"
-          echo "       PROD DEPLOYMENT SUCCESSFUL"
-          echo "========================================"
+          echo "=============================================="
+          echo "         PROD DEPLOYMENT SUCCESSFUL"
+          echo "=============================================="
+          echo ""
+          echo "Application URL:"
           echo "http://${{ secrets.PROD_HOST }}:8080/neontask-prod"
+          echo ""
+          echo "Environment: PROD"
+          echo "Tomcat Port: 8080"
+          echo "=============================================="
