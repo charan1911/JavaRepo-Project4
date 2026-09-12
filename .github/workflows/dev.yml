@@ -105,3 +105,5 @@ jobs:
           echo "========================================"
           echo "Application:"
           echo "http://${{ secrets.DEV_HOST }}:8080/neontask-dev"
+
+          
